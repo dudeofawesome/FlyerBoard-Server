@@ -4,6 +4,7 @@ var fs = require('fs');
 
 var app = require('express')();
 var server = require('http').Server(app);
+var bcrypt = require('bcrypt-nodejs');
 var util = require('util');
 var log_file = fs.createWriteStream(__dirname + '/logs/debug.log', {flags : 'w'});
 var log_stdout = process.stdout;
@@ -79,15 +80,6 @@ io.on('connection', function (socket) {
 			}
 		});
 	});
-	socket.on('reconnect to session', function(msg){
-		console.log("user trying to reconnect");
-		if (userSessions[msg.id] != null && userSessions[msg.id].authKey == msg.authKey) {
-			userSessions[msg.id].socketID = socket.id;
-			io.to(socket.id).emit('reconnect', "rejoined session");
-		} else {
-			io.to(socket.id).emit('reconnect', "failed to rejoin session");
-		}
-	});
 	socket.on('logout', function(msg){
 		// TODO clear GCM and APNS data
 		console.log("logout");
@@ -118,32 +110,6 @@ io.on('connection', function (socket) {
 					io.to(socket.id).emit('create account', "invalid email");
 			}
 		});
-	});
-	socket.on('change email', function(msg){
-		console.log("change email");
-		stopBruteForce(msg.ID);
-		if (disabledSocketIDs[msg.ID] != null) {
-			if (DATE.getTime() < disabledSocketIDs[msg.ID]) {
-				io.to(socket.id).emit('change email', "Failed to authenticate email change. You've been locked out.");
-				return;
-			}
-			else {
-				disabledSocketIDs[msg.ID] = null;
-			}
-		}
-		if (userSessions[msg.ID] != null && userSessions[msg.ID].authKey == msg.authKey) {
-			db.users.find({_id: db.ObjectId(msg.ID)}, function(err, users) {
-				if (validateEmail(msg.email) && users[0].username == msg.username && comparePassword(users[0].password, msg.password)) {
-					db.users.update({_id: db.ObjectId(msg.ID)}, {$set: {email: msg.email}});
-					io.emit('change email', "Successfully changed email.");
-				} else {
-					io.to(socket.id).emit('change email', "The email you entered was not valid.");
-				}
-				failedAuthAttempts[msg.ID] = null;
-			});
-		} else {
-			io.to(socket.id).emit('change email', "Failed to authenticate email change.");
-		}
 	});
 	socket.on('change password', function(msg){
 		console.log("change password");
@@ -219,13 +185,13 @@ io.on('connection', function (socket) {
 			io.to(socket.id).emit('set APNSregID', "Failed to authenticate APNS regID change.");
 		}
 	});
-	socket.on('new bid', function(msg){
+	socket.on('new flyer', function(msg){
 		// TODO check to ensure all values are valid (including that they are the correct type)
-		console.log("new bid");
+		console.log("new flyer");
 		stopBruteForce(msg.bidder)
 		if (disabledSocketIDs[msg.bidder] != null) {
 			if (DATE.getTime() < disabledSocketIDs[msg.bidder]) {
-				io.to(socket.id).emit('new bid', "You've failed too many times.");
+				io.to(socket.id).emit('new flyer', "You've failed too many times.");
 				return;
 			}
 			else {
@@ -236,79 +202,53 @@ io.on('connection', function (socket) {
 		if (userSessions[msg.bidder] != null && userSessions[msg.bidder].authKey == msg.authKey){
 			// this still needs lots of work!
 			db.items.find({_id: db.ObjectId(msg._id)}, function(err, items) {
-				if (parseFloat(msg.bid) > parseFloat(items[0].bidHistory[items[0].bidHistory.length - 1].bid)) {
-					// send outbid notification
-					console.log("considering sending an outbid notification");
-					if (items[0].bidHistory[items[0].bidHistory.length - 1].bidder != msg.bidder) {
-						// TODO check the othersocket
-						if (userSessions[items[0].bidHistory[items[0].bidHistory.length - 1].bidder] != null && connectedSockets[userSessions[items[0].bidHistory[items[0].bidHistory.length - 1].bidder].socketID] == true) {
-							console.log("sending an outbid notification");
-							io.to(userSessions[items[0].bidHistory[items[0].bidHistory.length - 1].bidder].socketID).emit('outbid notification', {item: msg._id, price: msg.bid, bidder: msg.bidder});
-						} else {
-							// TODO send a push notification to the user's phone or an email or text
-							db.users.find({_id: db.ObjectId(items[0].bidHistory[items[0].bidHistory.length - 1].bidder)}, function(err, users) {
-								var GCMregID = "";
-								if( err || !users) console.log(err);
-								else GCMregID = users[0].GCMregID;
-								var message = {
-									registration_id: GCMregID, // required
-									collapse_key: "You've been outbid",
-									data: {
-										item: msg._id,
-										price: msg.bid,
-										bidder: msg.bidder
-									}
-								};
-								gcm.send(message, function(err, messageId){
-									if (err) {
-										console.log("Failed to send GCM");
-									} else {
-										console.log("Sent GCM with ID ", messageId);
-									}
-								});
+				// send flyer notification
+				if (items[0].bidHistory[items[0].bidHistory.length - 1].bidder != msg.bidder) {
+					// TODO check the othersocket
+					if (userSessions[items[0].bidHistory[items[0].bidHistory.length - 1].bidder] != null && connectedSockets[userSessions[items[0].bidHistory[items[0].bidHistory.length - 1].bidder].socketID] == true) {
+						console.log("sending a flyer notification");
+						io.to(userSessions[items[0].bidHistory[items[0].bidHistory.length - 1].bidder].socketID).emit('outbid notification', {item: msg._id, price: msg.bid, bidder: msg.bidder});
+					} else {
+						// TODO send a push notification to the user's phone or an email or text
+						db.users.find({_id: db.ObjectId(items[0].bidHistory[items[0].bidHistory.length - 1].bidder)}, function(err, users) {
+							var GCMregID = "";
+							if( err || !users) console.log(err);
+							else GCMregID = users[0].GCMregID;
+							var message = {
+								registration_id: GCMregID, // required
+								collapse_key: "New flyers",
+								data: {
+									item: msg._id,
+									price: msg.bid,
+									bidder: msg.bidder
+								}
+							};
+							gcm.send(message, function(err, messageId){
+								if (err) {
+									console.log("Failed to send GCM");
+								} else {
+									console.log("Sent GCM with ID ", messageId);
+								}
 							});
-							db.users.find({_id: db.ObjectId(items[0].bidHistory[items[0].bidHistory.length - 1].bidder)}, function(err, users) {
-								var APNSregID = "";
-								if( err || !users) console.log(err);
-								else APNSregID = users[0].APNSregID;
-								// TODO send an Apple push notification
-							});
-						}
+						});
+						db.users.find({_id: db.ObjectId(items[0].bidHistory[items[0].bidHistory.length - 1].bidder)}, function(err, users) {
+							var APNSregID = "";
+							if( err || !users) console.log(err);
+							else APNSregID = users[0].APNSregID;
+							// TODO send an Apple push notification
+						});
 					}
-					db.items.update({_id: db.ObjectId(msg._id)}, {$push: {bidHistory: {bid: msg.bid, bidder: msg.bidder, time: DATE.getHours() + ":" + DATE.getMinutes()}}});
-					io.emit('new bid', {itemID: msg.itemID, _id: msg._id, bid: msg.bid, bidder: msg.bidder, time: DATE.getHours() + ":" + DATE.getMinutes()});
-				} else {
-					console.log("bidding failed with bid of " + msg.bid);
-					io.to(socket.id).emit('new bid', "Your bid was not above the current high bid.");
 				}
+				db.items.update({_id: db.ObjectId(msg._id)}, {$push: {bidHistory: {bid: msg.bid, bidder: msg.bidder, time: DATE.getHours() + ":" + DATE.getMinutes()}}});
+				io.emit('new flyer', {itemID: msg.itemID, _id: msg._id, bid: msg.bid, bidder: msg.bidder, time: DATE.getHours() + ":" + DATE.getMinutes()});
 				failedAuthAttempts[msg.bidder] = null;
 			});
 		} else
-			io.to(socket.id).emit('new bid', "failed to authenticate bid");
-	});
-	socket.on('disconnect', function () {
-		connectedSockets[socket.id] = null;
+			io.to(socket.id).emit('new flyer', "failed to authenticate flyer");
 	});
 });
 
 function authenticateIDauthKey (ID, authKey) {
-	stopBruteForce(ID);
-	if (disabledSocketIDs[msg.bidder] != null) {
-		if (DATE.getTime() < disabledSocketIDs[msg.bidder]) {
-			return false;
-		}
-		else {
-			disabledSocketIDs[msg.bidder] = null;
-		}
-	}
-	// verify user session
-	if (userSessions[msg.bidder] != null && userSessions[msg.bidder].authKey == msg.authKey)
-		return true;
-	else
-		return false;
-}
-
-function authenticateUsernamePass (ID, authKey) {
 	stopBruteForce(ID);
 	if (disabledSocketIDs[msg.bidder] != null) {
 		if (DATE.getTime() < disabledSocketIDs[msg.bidder]) {
@@ -357,12 +297,7 @@ function determineAuthKey(id) {
 }
 
 function validateEmail(email) {
-	var hasAtAndDot = email.indexOf("@") != -1 && email.indexOf(".") != -1;
-	var atAndDotSeparated = email.indexOf(".") - email.indexOf("@") > 1;
-	if (hasAtAndDot && atAndDotSeparated) {
-		return true;
-	} else
-		return false;
+	return (email.length >= 5 && email.indexOf(" ") == -1 && email.split("@").length == 2 && email.split(".").length == 2 && email.indexOf("@") < email.indexOf(".") - 1 && email.indexOf("@") != 0 && email.indexOf(".") != email.length - 1);
 }
 
 function validatePassword(password) {
