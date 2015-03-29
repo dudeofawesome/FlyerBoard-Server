@@ -1,3 +1,5 @@
+var PORT = 35937;
+
 var fs = require('fs');
 
 var app = require('express')();
@@ -397,6 +399,6 @@ function comparePassword (correct, testing) {
 
 
 
-server.listen(22846, function(){
-	console.log('listening on *:22846');
+server.listen(PORT, function(){
+	console.log('listening on *:' + PORT);
 });
