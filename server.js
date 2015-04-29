@@ -30,7 +30,7 @@ var connectedSockets = [];
 // connectedSockets[socket.id] = true;
 app.get("/flyers", function (req, res) {
 	console.log("get flyers");
-	db.fliers.find(function(err, items) {
+	db.fliers.find({school: req}, function(err, items) {
 		if( err || !items || items.length == 0) res.send("No flyers were found.");
 		else {
 			res.send("flyers->" + items[0].flyers);
